@@ -64,6 +64,7 @@ static XDevice *dev;
 static Atom touchpad_off_prop;
 static enum TouchpadState previous_state;
 static enum TouchpadState disable_state = TouchpadOff;
+static int movement_other = 0;
 static int verbose;
 
 #define KEYMAP_SIZE 32
@@ -73,7 +74,7 @@ static void
 usage(void)
 {
     fprintf(stderr,
-            "Usage: syndaemon [-i idle-time] [-m poll-delay] [-d] [-t] [-k]\n");
+            "Usage: syndaemon [-i idle-time] [-m poll-delay] [-d] [-t] [-M] [-k]\n");
     fprintf(stderr,
             "  -i How many seconds to wait after the last key press before\n");
     fprintf(stderr, "     enabling the touchpad. (default is 2.0s)\n");
@@ -83,6 +84,8 @@ usage(void)
     fprintf(stderr, "  -p Create a pid file with the specified name.\n");
     fprintf(stderr,
             "  -t Only disable tapping and scrolling, not mouse movements.\n");
+    fprintf(stderr,
+            "  -M Disable touchpad until any other mouse moved.\n");
     fprintf(stderr,
             "  -k Ignore modifier keys when monitoring keyboard activity.\n");
     fprintf(stderr, "  -K Like -k but also ignore Modifier+Key combos.\n");
@@ -181,6 +184,29 @@ install_signal_handler(void)
 }
 
 /**
+ * Return non-zero if the mouse pointer coords has changed since the last call.
+ */
+static int
+mouse_activity(Display * display)
+{
+    static int prev_x, prev_y;
+    Window root, fromroot, tmpwin;
+    int x, y, tmp;
+    uint tmp2;
+
+    root = DefaultRootWindow(display);
+
+    XQueryPointer(display, root, &fromroot, &tmpwin, &x, &y, &tmp, &tmp, &tmp2);
+
+    if (x!=prev_x || y!=prev_y) tmp = 1;
+    else tmp = 0;
+    prev_x = x;
+    prev_y = y;
+
+    return tmp;
+}
+
+/**
  * Return non-zero if the keyboard state has changed since the last call.
  */
 static int
@@ -231,6 +257,12 @@ main_loop(Display * display, double idle_time, int poll_delay)
 
     for (;;) {
         current_time = get_time();
+
+        if (movement_other && mouse_activity(display)) {
+          last_activity = current_time - idle_time - 1;
+          goto toggle;
+        }
+
         if (keyboard_activity(display))
             last_activity = current_time;
 
@@ -239,6 +271,7 @@ main_loop(Display * display, double idle_time, int poll_delay)
         if (last_activity > current_time)
             last_activity = current_time - idle_time - 1;
 
+    toggle:
         if (current_time > last_activity + idle_time) { /* Enable touchpad */
             toggle_touchpad(True);
         }
@@ -546,7 +579,7 @@ main(int argc, char *argv[])
     int use_xrecord = 0;
 
     /* Parse command line parameters */
-    while ((c = getopt(argc, argv, "i:m:dtp:kKR?v")) != EOF) {
+    while ((c = getopt(argc, argv, "i:m:dtMp:kKR?v")) != EOF) {
         switch (c) {
         case 'i':
             idle_time = atof(optarg);
@@ -559,6 +592,9 @@ main(int argc, char *argv[])
             break;
         case 't':
             disable_state = TappingOff;
+            break;
+        case 'M':
+            movement_other = 1;
             break;
         case 'p':
             pid_file = optarg;
